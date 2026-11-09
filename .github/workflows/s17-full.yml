@@ -1,0 +1,126 @@
+name: s17 B fresh replay (full closure + leanchecker)
+on:
+  workflow_dispatch:
+    inputs:
+      waves:
+        type: string
+        default: "w0:1-1:1 w1:2-2:16 w2:3-3:1 w3:4-4:12 w4:5-5:4 w5:6-15:1 w6:16-16:6 w7:17-23:1 w8:24-24:8 w9:25-30:1"
+      jobs: {type: string, default: "4"}
+      pjobs: {type: string, default: "2"}
+permissions:
+  contents: read
+jobs:
+  prep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MATHLIB: "1"
+      S17_SHARD: w0-00
+    outputs:
+      w1: ${{ steps.m.outputs.w1 }}
+      w2: ${{ steps.m.outputs.w2 }}
+      w3: ${{ steps.m.outputs.w3 }}
+      w4: ${{ steps.m.outputs.w4 }}
+      w5: ${{ steps.m.outputs.w5 }}
+      w6: ${{ steps.m.outputs.w6 }}
+      w7: ${{ steps.m.outputs.w7 }}
+      w8: ${{ steps.m.outputs.w8 }}
+      w9: ${{ steps.m.outputs.w9 }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Setup
+        run: bash replay/setup.sh
+      - name: Plan
+        id: m
+        run: |
+          mkdir -p plan out
+          python3 replay/s17b.py plan --waves ${{ inputs.waves }} --complete --out plan/plan.json
+          python3 replay/s17b.py matrix --plan plan/plan.json --waves w1 w2 w3 w4 w5 w6 w7 w8 w9 --jobs ${{ inputs.jobs }} --pjobs ${{ inputs.pjobs }} >> "$GITHUB_OUTPUT"
+          python3 -c "import json;p=json.load(open('plan/plan.json'));open('shard.txt','w').write('\n'.join(p['w0'][0]['modules'])+'\n')"
+      - name: Authenticate release; extract w0
+        run: python3 replay/s17b.py extract --modules shard.txt --delete-archives
+      - name: Native checker libraries + depth-1 modules
+        run: |
+          python3 replay/s17b.py fast --receipts out/receipts.jsonl --logs out/logs
+          python3 replay/s17b.py build --modules shard.txt --jobs 4 --proof-jobs 4 --receipts out/receipts.jsonl --logs out/logs
+          printf 'Sq17Lean.%s\n' HalfPlaneFast CaptureRunFast CaptureTableFast HalfPlaneCoverFast CaptureSummaryFast >> check0.txt
+          cat shard.txt >> check0.txt
+          python3 replay/s17b.py check --modules check0.txt --mathlib --batch 40 --receipts out/check.jsonl --logs out/checklogs
+          python3 replay/s17b.py stage --fast --modules shard.txt --dest stage
+          tar -czf out/logs.tgz out/logs out/checklogs; rm -rf out/logs out/checklogs
+      - uses: actions/upload-artifact@v4
+        with: {name: plan, path: plan/, retention-days: 30}
+      - uses: actions/upload-artifact@v4
+        with: {name: olean-w0-00, path: stage/, retention-days: 30, compression-level: 1}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: receipts-w0-00, path: out/, retention-days: 30}
+  w1:
+    needs: prep
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w1, shards: "${{ needs.prep.outputs.w1 }}"}
+  w2:
+    needs: [prep, w1]
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w2, shards: "${{ needs.prep.outputs.w2 }}"}
+  w3:
+    needs: [prep, w2]
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w3, shards: "${{ needs.prep.outputs.w3 }}"}
+  w4:
+    needs: [prep, w3]
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w4, shards: "${{ needs.prep.outputs.w4 }}"}
+  w5:
+    needs: [prep, w4]
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w5, shards: "${{ needs.prep.outputs.w5 }}"}
+  w6:
+    needs: [prep, w5]
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w6, shards: "${{ needs.prep.outputs.w6 }}"}
+  w7:
+    needs: [prep, w6]
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w7, shards: "${{ needs.prep.outputs.w7 }}"}
+  w8:
+    needs: [prep, w7]
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w8, shards: "${{ needs.prep.outputs.w8 }}"}
+  w9:
+    needs: [prep, w8]
+    uses: ./.github/workflows/s17-wave.yml
+    with: {wave: w9, shards: "${{ needs.prep.outputs.w9 }}"}
+  final:
+    needs: w9
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MATHLIB: "1"
+      S17_SHARD: final
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Setup
+        run: bash replay/setup.sh
+      - uses: actions/download-artifact@v4
+        with: {pattern: olean-*, merge-multiple: true, path: .lake/build/lib/lean}
+      - uses: actions/download-artifact@v4
+        with: {pattern: receipts-*, path: receipts}
+      - name: Validate the fresh-build chain
+        run: |
+          mkdir -p final
+          python3 replay/check17.py --manifest manifest.json --receipts receipts --run "$GITHUB_RUN_ID" --lib .lake/build/lib/lean --out final/chain.json
+      - name: Final statement and axiom audit (from this run's oleans)
+        if: always()
+        run: |
+          LEAN_PATH=$PWD/.lake/build/lib/lean:$(lake env printenv LEAN_PATH) /usr/bin/time -v lean replay/FinalAudit.lean > final/FinalAudit.log 2> final/FinalAudit.time; echo "rc=$?" >> final/FinalAudit.log
+          tail -40 final/FinalAudit.log; grep -E 'Maximum resident|Elapsed' final/FinalAudit.time
+          python3 replay/compare_axioms.py final/FinalAudit.log --reference verification/Square17Optimality.log --out final/axioms.json || echo AXIOM_COMPARE_FAILED
+          sha256sum final/* > final/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: final-evidence, path: final/, retention-days: 90}

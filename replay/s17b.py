@@ -381,6 +381,37 @@ def cmd_pilot(a):
     print('pilot1', len(p1), sum(mods[k]['bytes'] for k in p1), 'pilot2', len(p2), sum(mods[k]['bytes'] for k in p2))
 
 
+def cmd_stage(a):
+    """Copy this shard's own outputs (olean, ilean; .so for the fast step) under DEST, mirroring lib/lean."""
+    import shutil
+    names = Path(a.modules).read_text().split() if a.modules else []
+    files = [olean(m) for m in names] + [olean(m).with_suffix('.ilean') for m in names]
+    if a.fast:
+        files += [olean('Sq17Lean.' + n) for n in FAST] + [olean('Sq17Lean.' + n).with_suffix('.ilean') for n in FAST]
+        files += native_libs()
+    n = 0
+    for f in files:
+        if f.is_file():
+            d = Path(a.dest) / f.relative_to(LIB)
+            d.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, d)
+            n += 1
+    print('STAGED', n, 'of', len(files))
+
+
+def cmd_matrix(a):
+    """GitHub outputs: one matrix JSON per wave from plan.json (shard, mathlib, job counts)."""
+    m, mods = manifest()
+    deps, core, depth = graph(mods)
+    plan = json.loads(Path(a.plan).read_text())
+    lines = []
+    for w in a.waves:
+        shards = [dict(shard=s['shard'], mathlib='0' if all(core[x] for x in s['modules']) else '1',
+                       jobs=a.jobs, pjobs=a.pjobs) for s in plan.get(w, [])]
+        lines.append(f'{w}={json.dumps(shards, separators=(",", ":"))}')
+    print('\n'.join(lines))
+
+
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -407,12 +438,21 @@ def main():
     pl.add_argument('--overhead', type=int, default=20000)
     pl.add_argument('--complete', action='store_true')
     pl.add_argument('--out', required=True)
+    mx = sub.add_parser('matrix')
+    mx.add_argument('--plan', required=True)
+    mx.add_argument('--waves', nargs='+', required=True)
+    mx.add_argument('--jobs', type=int, required=True)
+    mx.add_argument('--pjobs', type=int, required=True)
+    st = sub.add_parser('stage')
+    st.add_argument('--modules')
+    st.add_argument('--fast', action='store_true')
+    st.add_argument('--dest', required=True)
     pp = sub.add_parser('pilot')
     pp.add_argument('--heavy', type=int, default=10)
     pp.add_argument('--random', type=int, default=60)
     a = p.parse_args()
     try:
-        dict(extract=cmd_extract, fast=cmd_fast, build=cmd_build, check=cmd_check, plan=cmd_plan, pilot=cmd_pilot)[a.cmd](a)
+        dict(extract=cmd_extract, fast=cmd_fast, build=cmd_build, check=cmd_check, plan=cmd_plan, pilot=cmd_pilot, stage=cmd_stage, matrix=cmd_matrix)[a.cmd](a)
     except Fail as x:
         print('S17B_FAIL', x, file=sys.stderr)
         sys.exit(2)

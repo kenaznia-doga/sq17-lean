@@ -1,0 +1,62 @@
+name: s17 B wave
+on:
+  workflow_call:
+    inputs:
+      wave: {type: string, required: true}
+      shards: {type: string, required: true}
+permissions:
+  contents: read
+jobs:
+  shard:
+    if: ${{ inputs.shards != '[]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        s: ${{ fromJSON(inputs.shards) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MATHLIB: ${{ matrix.s.mathlib }}
+      S17_SHARD: ${{ matrix.s.shard }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Setup
+        run: bash replay/setup.sh
+      - uses: actions/download-artifact@v4
+        with: {name: plan, path: plan}
+      - name: Authenticate release and extract this shard's sources
+        run: |
+          python3 -c "import json,sys;p=json.load(open('plan/plan.json'));s=[x for w in p.values() for x in w if x['shard']=='${{ matrix.s.shard }}'][0];open('shard.txt','w').write('\n'.join(s['modules'])+'\n')"
+          wc -l shard.txt
+          python3 replay/s17b.py extract --modules shard.txt --delete-archives
+      - uses: actions/download-artifact@v4
+        with: {pattern: olean-*, merge-multiple: true, path: .lake/build/lib/lean}
+      - name: Compile
+        run: |
+          mkdir -p out
+          ( while true; do free -m | awk '/Mem/{print strftime("%H:%M:%S"), $3, $7}' >> out/mem.log; sleep 20; done ) &
+          python3 replay/s17b.py build --modules shard.txt --jobs ${{ matrix.s.jobs }} --proof-jobs ${{ matrix.s.pjobs }} --receipts out/receipts.jsonl --logs out/logs
+      - name: leanchecker (per-module kernel replay)
+        run: python3 replay/s17b.py check --modules shard.txt $([ "$MATHLIB" = 1 ] && echo --mathlib) --batch 40 --receipts out/check.jsonl --logs out/checklogs
+      - name: Stage outputs
+        if: always()
+        run: |
+          python3 replay/s17b.py stage --modules shard.txt --dest stage
+          tar -czf out/logs.tgz out/logs out/checklogs 2>/dev/null || true; rm -rf out/logs out/checklogs
+          du -sh stage; df -h /
+      - uses: actions/upload-artifact@v4
+        with:
+          name: olean-${{ matrix.s.shard }}
+          path: stage/
+          retention-days: 30
+          compression-level: 1
+        if: success()
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: receipts-${{ matrix.s.shard }}
+          path: out/
+          retention-days: 30
