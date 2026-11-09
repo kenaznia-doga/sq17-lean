@@ -1,0 +1,94 @@
+name: s17 B final audit of a build run
+on:
+  workflow_dispatch:
+    inputs:
+      run_id: {type: string, required: true}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  final:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MATHLIB: "1"
+      S17_SHARD: final
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Setup
+        run: bash replay/setup.sh
+      - name: Download the build run's artifacts
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5; do rm -rf olean-dl; gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --pattern 'olean-*' -D olean-dl && break; sleep 30; done
+          mkdir -p .lake/build/lib/lean && for d in olean-dl/*/; do cp -rn "$d". .lake/build/lib/lean/; done; rm -rf olean-dl
+          for i in 1 2 3 4 5; do rm -rf receipts; gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --pattern 'receipts-*' -D receipts && break; sleep 30; done
+          for i in 1 2 3 4 5; do rm -rf mathlib-check; gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --pattern 'mathlib-check-*' -D mathlib-check && break; sleep 30; done
+      - name: Validate the fresh-build chain
+        run: |
+          mkdir -p final
+          python3 replay/check17.py --manifest manifest.json --receipts receipts --run "${{ inputs.run_id }}" --lib .lake/build/lib/lean --out final/chain.json
+      - name: Final statement and axiom audit (from this run's oleans)
+        if: always()
+        run: |
+          set -euo pipefail
+          LEAN_PATH=$PWD/.lake/build/lib/lean:$(lake env printenv LEAN_PATH) /usr/bin/time -v -o final/FinalAudit.time lean replay/FinalAudit.lean > final/FinalAudit.log 2>&1 && rc=0 || rc=$?
+          echo "rc=$rc" >> final/FinalAudit.time
+          tail -40 final/FinalAudit.log; grep -E 'Maximum resident|Elapsed' final/FinalAudit.time
+          test "$rc" -eq 0
+          ! grep -qE 'error:|sorryAx' final/FinalAudit.log
+          python3 replay/compare_axioms.py final/FinalAudit.log --reference verification/Square17Optimality.log --out final/axioms.json
+      - name: Square17Optimality's own build log vs the producer's
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p w9logs && for t in receipts/receipts-w9-*/logs.tgz; do tar -xzf "$t" -C w9logs; done
+          cp w9logs/out/logs/Sq17Lean.Square17Optimality.log final/Square17Optimality.build.log
+          python3 replay/compare_axioms.py final/Square17Optimality.build.log --reference verification/Square17Optimality.log --out final/axioms-buildlog.json
+      - name: Dependency walk from the final theorem (for C's closure gate)
+        if: always()
+        run: |
+          set -euo pipefail
+          S17_GRAPH_OUT=$PWD/final/graph.jsonl LEAN_PATH=$PWD/.lake/build/lib/lean:$(lake env printenv LEAN_PATH) /usr/bin/time -v -o final/GraphWalk.time lean replay/GraphWalk.lean | tee final/GraphWalk.log
+          grep -E 'Maximum resident|Elapsed' final/GraphWalk.time
+          python3 - <<'PY'
+          import json,glob
+          m=json.load(open('manifest.json'))
+          olean={}
+          for f in glob.glob('receipts/*/receipts.jsonl'):
+              for l in open(f):
+                  r=json.loads(l)
+                  if r['kind']=='fast' or (r['kind']=='module' and r.get('ok')): olean[r['module']]=r['olean']
+          mods={v['module']:dict(source_sha256=v['sha256'],path=k,olean_sha256=olean.get(v['module'])) for k,v in m['sources'].items()}
+          json.dump(mods,open('final/modules.json','w'),indent=0,sort_keys=True)
+          PY
+          gzip -9 final/graph.jsonl; ls -la final/
+      - name: Mathlib leanchecker evidence
+        if: always()
+        run: |
+          grep -h MATHLIB_LEANCHECKER_OK mathlib-check/*/mathlib-check.log | tee final/mathlib-check.txt
+          test "$(grep -h MATHLIB_LEANCHECKER_OK mathlib-check/*/mathlib-check.log | wc -l)" -eq 8
+          cat mathlib-check/mathlib-check-0/closure.txt | wc -l >> final/mathlib-check.txt
+          sha256sum mathlib-check/*/package-oleans.sha256 >> final/mathlib-check.txt
+      - name: Trust-base inventory (toolchain, Mathlib cache oleans, sources)
+        if: always()
+        run: |
+          lean --version > final/toolchain.txt; sha256sum $(dirname $(elan which lean))/* >> final/toolchain.txt 2>/dev/null || true
+          ( cd .lake/packages && find . -name '*.olean' -print0 | sort -z | xargs -0 sha256sum ) > final/package-oleans.sha256
+          wc -l final/package-oleans.sha256
+          python3 -c "
+          import json,hashlib
+          m=json.load(open('manifest.json'))
+          lines=sorted(f\"{k} {v['sha256']}\" for k,v in m['sources'].items())
+          open('final/source_list.txt','w').write('\n'.join(lines)+'\n')
+          "
+          sha256sum manifest.json lean-toolchain lake-manifest.json lakefile.toml replay/* > final/config.sha256
+          sha256sum final/* > final/SHA256SUMS || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: final-evidence-${{ inputs.run_id }}
+          path: final/
+          retention-days: 90
