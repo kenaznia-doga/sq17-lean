@@ -34,11 +34,13 @@ jobs:
           python3 replay/s17b.py extract --modules shard.txt --delete-archives
       - uses: actions/download-artifact@v4
         with: {pattern: olean-*, merge-multiple: true, path: .lake/build/lib/lean}
+      - uses: actions/download-artifact@v4
+        with: {pattern: receipts-*, path: prev-receipts}
       - name: Compile
         run: |
           mkdir -p out
           ( while true; do free -m | awk '/Mem/{print strftime("%H:%M:%S"), $3, $7}' >> out/mem.log; sleep 20; done ) &
-          python3 replay/s17b.py build --modules shard.txt --jobs ${{ matrix.s.jobs }} --proof-jobs ${{ matrix.s.pjobs }} --receipts out/receipts.jsonl --logs out/logs
+          python3 replay/s17b.py build --modules shard.txt --jobs ${{ matrix.s.jobs }} --proof-jobs ${{ matrix.s.pjobs }} --expect prev-receipts --receipts out/receipts.jsonl --logs out/logs
       - name: leanchecker (per-module kernel replay)
         run: python3 replay/s17b.py check --modules shard.txt $([ "$MATHLIB" = 1 ] && echo --mathlib) --batch 40 --receipts out/check.jsonl --logs out/checklogs
       - name: Stage outputs

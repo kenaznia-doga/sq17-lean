@@ -89,7 +89,13 @@ def safe_dest(name):
     if not name.startswith('Sq17Lean/') or not name.endswith('.lean') or p.is_absolute() \
             or any(s in ('', '.', '..') for s in name.split('/')) or '\\' in name:
         raise Fail(f'unsafe archive member {name!r}')
-    return ROOT.joinpath(*p.parts)
+    dest = ROOT.joinpath(*p.parts)
+    for q in [dest, *dest.parents]:
+        if q == ROOT:
+            break
+        if q.is_symlink():
+            raise Fail(f'symlink destination {name}')
+    return dest
 
 
 def cmd_extract(a):
@@ -104,6 +110,12 @@ def cmd_extract(a):
     for k, v in mods.items():
         if v['archive'] is None and sha(ROOT / v['path']) != v['sha256']:
             raise Fail(f'in-repo source mismatch: {k}')
+    paths = {v['path'] for v in mods.values()}
+    for f in (ROOT / 'Sq17Lean').rglob('*'):
+        if f.is_symlink():
+            raise Fail(f'symlink in source tree: {f}')
+        if f.is_file() and f.suffix == '.lean' and str(f.relative_to(ROOT)) not in paths:
+            raise Fail(f'unlisted source on disk: {f}')
     need = {mods[k]['archive'] for k in want if mods[k]['archive']}
     got = 0
     for arch, info in m['archives'].items():
@@ -112,7 +124,7 @@ def cmd_extract(a):
             continue
         if ap.stat().st_size != info['bytes'] or sha(ap) != info['sha256']:
             raise Fail(f'archive mismatch {arch}')
-        seen = 0
+        seen = set()
         with tarfile.open(ap, 'r:*') as t:
             for mem in t:
                 if not mem.isfile():
@@ -120,7 +132,9 @@ def cmd_extract(a):
                 v = by_path.get(mem.name)
                 if v is None or v['archive'] != arch:
                     raise Fail(f'unlisted member {mem.name} in {arch}')
-                seen += 1
+                if mem.name in seen:
+                    raise Fail(f'duplicate member {mem.name}')
+                seen.add(mem.name)
                 if v['module'] not in want:
                     continue
                 dest = safe_dest(mem.name)
@@ -132,8 +146,9 @@ def cmd_extract(a):
                 tmp.write_bytes(data)
                 tmp.replace(dest)
                 got += 1
-        if seen != info['members']:
-            raise Fail(f'{arch}: {seen} members, manifest says {info["members"]}')
+        listed = {v['path'] for v in mods.values() if v['archive'] == arch}
+        if seen != listed or len(seen) != info['members']:
+            raise Fail(f'{arch}: member set differs from manifest')
         if a.delete_archives:
             ap.unlink()
     for k in want:
@@ -164,6 +179,31 @@ def timed(cmd, log, env=None):
                               t0=round(t0, 3))
 
 
+def config_info():
+    return {n: sha(ROOT / n) for n in ['manifest.json', 'lean-toolchain', 'lake-manifest.json', 'lakefile.toml',
+                                       'replay/s17b.py', 'scripts/reproduce.py']}
+
+
+def find_olean(lean_path, m):
+    rel = m.replace('.', '/') + '.olean'
+    for d in lean_path.split(os.pathsep):
+        if d and (Path(d) / rel).is_file():
+            return Path(d) / rel
+    raise Fail(f'external import {m} not on LEAN_PATH')
+
+
+def expected_oleans(receipt_dir):
+    exp = {}
+    for f in sorted(Path(receipt_dir).rglob('receipts.jsonl')):
+        for line in f.read_text().splitlines():
+            r = json.loads(line)
+            if r.get('kind') == 'fast' or (r.get('kind') == 'module' and r.get('ok')):
+                if r['module'] in exp and exp[r['module']] != r['olean']:
+                    raise Fail(f'two producers for {r["module"]}')
+                exp[r['module']] = r['olean']
+    return exp
+
+
 def runner_info():
     return dict(host=platform.node(), cpus=os.cpu_count(), machine=platform.machine(),
                 run=os.environ.get('GITHUB_RUN_ID'), attempt=os.environ.get('GITHUB_RUN_ATTEMPT'),
@@ -183,6 +223,8 @@ def cmd_fast(a):
         p = ROOT / 'Sq17Lean' / (name + '.lean')
         o = LIB / 'Sq17Lean' / (name + '.olean')
         log = Path(a.logs) / ('Sq17Lean.' + name + '.log')
+        if o.exists():
+            raise Fail(f'{name}: olean present before compiling')
         rc, t = timed([lean, p, '-o', o, '-i', o.with_suffix('.ilean'), '-c', IR / (name + '.c')], log, env)
         if rc or FAIL.search(log.read_text(errors='replace')):
             raise Fail(f'fast module {name} failed')
@@ -192,7 +234,7 @@ def cmd_fast(a):
         subprocess.run([leanc, '-shared', '-o', so, IR / (name + '.o')], check=True)
         rec.append(dict(kind='fast', module='Sq17Lean.' + name, source=sha(p), olean=sha(o),
                         ilean=sha(o.with_suffix('.ilean')), c=sha(IR / (name + '.c')), so=sha(so),
-                        log=sha(log), lean=version, runner=runner_info(), **t))
+                        log=sha(log), lean=version, config=config_info(), runner=runner_info(), **t))
     with out.open('a') as f:
         for r in rec:
             f.write(json.dumps(r, sort_keys=True) + '\n')
@@ -226,10 +268,19 @@ def cmd_build(a):
     if not all(core[t] for t in targets):
         lean_path += os.pathsep + subprocess.check_output(['lake', 'env', 'printenv', 'LEAN_PATH'], text=True).strip()
     env = dict(os.environ, LEAN_PATH=lean_path)
+    expect = expected_oleans(a.expect) if a.expect else {}
+    supplied = {d for t in targets for d in deps[t] if d not in tset}
+    for d in sorted(supplied):
+        if not olean(d).is_file():
+            raise Fail(f'import {d} neither in this shard nor supplied')
+        if a.expect and sha(olean(d)) != expect.get(d):
+            raise Fail(f'supplied olean {d} does not match its producing receipt')
+    config = config_info()
+    ext_hash = {}
     for t in targets:
-        for d in deps[t]:
-            if d not in tset and not olean(d).is_file():
-                raise Fail(f'{t}: import {d} neither in this shard nor supplied')
+        for d in mods[t]['imports']:
+            if not d.startswith('Sq17Lean.') and d not in ext_hash:
+                ext_hash[d] = sha(find_olean(lean_path, d))
     logs = Path(a.logs)
     rec_f = Path(a.receipts).open('a')
     done = {d for t in targets for d in deps[t] if d not in tset}
@@ -248,7 +299,9 @@ def cmd_build(a):
         text = log.read_text(errors='replace')
         ok = rc == 0 and not FAIL.search(text) and o.is_file()
         r = dict(kind='module', module=t, ok=ok, rc=rc, source=sha(p), source_manifest=mods[t]['sha256'],
-                 imports=dep_hash, native=native_key, lean=version, log=sha(log),
+                 imports=dep_hash, native=native_key, lean=version, log=sha(log), config=config,
+                 external={d: ext_hash[d] for d in mods[t]['imports'] if not d.startswith('Sq17Lean.')},
+                 argv=['lean', *['--load-dynlib=' + n.name for n in libs], mods[t]['path']],
                  olean=sha(o) if o.is_file() else None,
                  ilean=sha(o.with_suffix('.ilean')) if o.with_suffix('.ilean').is_file() else None,
                  olean_bytes=o.stat().st_size if o.is_file() else None, runner=runner_info(), **tm)
@@ -307,9 +360,13 @@ def cmd_check(a):
     for i in range(0, len(targets), a.batch):
         batch = targets[i:i + a.batch]
         log = Path(a.logs) / f'leanchecker-{i:05d}.log'
+        before = {t: sha(olean(t)) for t in batch}
         rc, tm = timed([checker, *batch], log, env)
+        after = {t: sha(olean(t)) for t in batch}
+        if before != after:
+            raise Fail('olean changed during leanchecker')
         r = dict(kind='leanchecker', modules=batch, rc=rc, log=sha(log), lean=version,
-                 olean={t: sha(olean(t)) for t in batch}, runner=runner_info(), **tm)
+                 olean=after, runner=runner_info(), **tm)
         out.write(json.dumps(r, sort_keys=True) + '\n')
         out.flush()
         print('CHECK', i, rc, tm['wall'], tm['maxrss_kb'], flush=True)
@@ -389,13 +446,15 @@ def cmd_stage(a):
     if a.fast:
         files += [olean('Sq17Lean.' + n) for n in FAST] + [olean('Sq17Lean.' + n).with_suffix('.ilean') for n in FAST]
         files += native_libs()
+    missing = [f for f in files if not f.is_file()]
+    if missing:
+        raise Fail(f'stage: {len(missing)} outputs missing, first {missing[0]}')
     n = 0
     for f in files:
-        if f.is_file():
-            d = Path(a.dest) / f.relative_to(LIB)
-            d.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(f, d)
-            n += 1
+        d = Path(a.dest) / f.relative_to(LIB)
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, d)
+        n += 1
     print('STAGED', n, 'of', len(files))
 
 
@@ -426,6 +485,7 @@ def main():
     b.add_argument('--jobs', type=int, default=4)
     b.add_argument('--proof-jobs', type=int, default=2)
     b.add_argument('--keep-going', action='store_true')
+    b.add_argument('--expect', help='receipt dir of earlier waves; every supplied olean must match')
     c = sub.add_parser('check')
     c.add_argument('--modules', required=True)
     c.add_argument('--batch', type=int, default=40)
