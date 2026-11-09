@@ -60,39 +60,39 @@ jobs:
   w1:
     needs: prep
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w1, shards: "${{ needs.prep.outputs.w1 }}"}
+    with: {wave: w1, shards: "${{ needs.prep.outputs.w1 }}", mathlib_batch: "2"}
   w2:
     needs: [prep, w1]
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w2, shards: "${{ needs.prep.outputs.w2 }}"}
+    with: {wave: w2, shards: "${{ needs.prep.outputs.w2 }}", mathlib_batch: "2"}
   w3:
     needs: [prep, w2]
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w3, shards: "${{ needs.prep.outputs.w3 }}"}
+    with: {wave: w3, shards: "${{ needs.prep.outputs.w3 }}", mathlib_batch: "2"}
   w4:
     needs: [prep, w3]
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w4, shards: "${{ needs.prep.outputs.w4 }}"}
+    with: {wave: w4, shards: "${{ needs.prep.outputs.w4 }}", mathlib_batch: "2"}
   w5:
     needs: [prep, w4]
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w5, shards: "${{ needs.prep.outputs.w5 }}"}
+    with: {wave: w5, shards: "${{ needs.prep.outputs.w5 }}", mathlib_batch: "2"}
   w6:
     needs: [prep, w5]
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w6, shards: "${{ needs.prep.outputs.w6 }}"}
+    with: {wave: w6, shards: "${{ needs.prep.outputs.w6 }}", mathlib_batch: "2"}
   w7:
     needs: [prep, w6]
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w7, shards: "${{ needs.prep.outputs.w7 }}"}
+    with: {wave: w7, shards: "${{ needs.prep.outputs.w7 }}", mathlib_batch: "2"}
   w8:
     needs: [prep, w7]
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w8, shards: "${{ needs.prep.outputs.w8 }}"}
+    with: {wave: w8, shards: "${{ needs.prep.outputs.w8 }}", mathlib_batch: "2"}
   w9:
     needs: [prep, w8]
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w9, shards: "${{ needs.prep.outputs.w9 }}"}
+    with: {wave: w9, shards: "${{ needs.prep.outputs.w9 }}", mathlib_batch: "2"}
   final:
     needs: w9
     runs-on: ubuntu-24.04

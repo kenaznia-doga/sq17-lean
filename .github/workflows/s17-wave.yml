@@ -5,6 +5,7 @@ on:
       wave: {type: string, required: true}
       shards: {type: string, required: true}
       reuse: {type: boolean, required: false, default: false}
+      mathlib_batch: {type: string, required: true}
 permissions:
   contents: read
   actions: read
@@ -25,6 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
+      - name: Swap headroom (leanchecker of Mathlib-importing data modules peaks near the 16 GB runner limit)
+        run: |
+          set -euo pipefail
+          sudo swapoff -a
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 20G /mnt/s17swap
+          sudo chmod 600 /mnt/s17swap
+          sudo mkswap /mnt/s17swap
+          sudo swapon /mnt/s17swap
+          free -m; df -h / /mnt
       - name: Setup
         run: bash replay/setup.sh
       - uses: actions/download-artifact@v4
@@ -53,7 +64,10 @@ jobs:
           ( while true; do free -m | awk '/Mem/{print strftime("%H:%M:%S"), $3, $7}' >> out/mem.log; sleep 20; done ) &
           python3 replay/s17b.py build --modules shard.txt --jobs ${{ matrix.s.jobs }} --proof-jobs ${{ matrix.s.pjobs }} --expect prev-receipts --receipts out/receipts.jsonl --logs out/logs
       - name: leanchecker (per-module kernel replay)
-        run: python3 replay/s17b.py check --modules shard.txt $([ "$MATHLIB" = 1 ] && echo --mathlib) --batch 8 --receipts out/check.jsonl --logs out/checklogs
+        run: |
+          set -euo pipefail
+          ( while true; do free -m | awk '/Mem|Swap/{printf "%s ", $0} END{print ""}' | sed "s/^/MEM $(date -u +%H:%M:%S) /"; sleep 15; done ) &
+          python3 replay/s17b.py check --modules shard.txt $([ "$MATHLIB" = 1 ] && echo --mathlib) --batch 8 --mathlib-batch ${{ inputs.mathlib_batch }} --receipts out/check.jsonl --logs out/checklogs
       - name: Stage outputs
         if: always()
         run: |

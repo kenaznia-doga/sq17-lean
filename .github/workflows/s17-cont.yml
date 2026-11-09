@@ -8,6 +8,7 @@ on:
         default: "w0:1-1:1 w1:2-2:16 w2:3-3:10 w3:4-4:12 w4:5-5:4 w5:6-15:3 w6:16-16:6 w7:17-23:2 w8:24-24:8 w9:25-30:1"
       jobs: {type: string, default: "3"}
       pjobs: {type: string, default: "2"}
+      mathlib_batch: {type: string, required: true, description: 'leanchecker modules per process for Mathlib-importing modules (6 OOM-killed the 16 GB runner on w5-00 CaptureTerminalRowsData01..06)'}
 permissions:
   contents: read
   actions: read
@@ -50,39 +51,39 @@ jobs:
   w2:
     needs: prep
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w2, shards: "${{ needs.prep.outputs.w2 }}", reuse: true}
+    with: {wave: w2, shards: "${{ needs.prep.outputs.w2 }}", reuse: true, mathlib_batch: "${{ inputs.mathlib_batch }}"}
   w3:
     needs: [prep, w2]
-    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w2.result != 'failure' }}
+    if: ${{ !cancelled() && needs.prep.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w3, shards: "${{ needs.prep.outputs.w3 }}", reuse: true}
+    with: {wave: w3, shards: "${{ needs.prep.outputs.w3 }}", reuse: true, mathlib_batch: "${{ inputs.mathlib_batch }}"}
   w4:
-    needs: [prep, w3]
-    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w3.result != 'failure' }}
+    needs: [prep, w2, w3]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w4, shards: "${{ needs.prep.outputs.w4 }}", reuse: true}
+    with: {wave: w4, shards: "${{ needs.prep.outputs.w4 }}", reuse: true, mathlib_batch: "${{ inputs.mathlib_batch }}"}
   w5:
-    needs: [prep, w4]
-    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w4.result != 'failure' }}
+    needs: [prep, w2, w3, w4]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w5, shards: "${{ needs.prep.outputs.w5 }}", reuse: true}
+    with: {wave: w5, shards: "${{ needs.prep.outputs.w5 }}", reuse: true, mathlib_batch: "${{ inputs.mathlib_batch }}"}
   w6:
-    needs: [prep, w5]
-    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w5.result != 'failure' }}
+    needs: [prep, w2, w3, w4, w5]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w6, shards: "${{ needs.prep.outputs.w6 }}", reuse: true}
+    with: {wave: w6, shards: "${{ needs.prep.outputs.w6 }}", reuse: true, mathlib_batch: "${{ inputs.mathlib_batch }}"}
   w7:
-    needs: [prep, w6]
-    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w6.result != 'failure' }}
+    needs: [prep, w2, w3, w4, w5, w6]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w7, shards: "${{ needs.prep.outputs.w7 }}", reuse: true}
+    with: {wave: w7, shards: "${{ needs.prep.outputs.w7 }}", reuse: true, mathlib_batch: "${{ inputs.mathlib_batch }}"}
   w8:
-    needs: [prep, w7]
-    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w7.result != 'failure' }}
+    needs: [prep, w2, w3, w4, w5, w6, w7]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w8, shards: "${{ needs.prep.outputs.w8 }}", reuse: true}
+    with: {wave: w8, shards: "${{ needs.prep.outputs.w8 }}", reuse: true, mathlib_batch: "${{ inputs.mathlib_batch }}"}
   w9:
-    needs: [prep, w8]
-    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w8.result != 'failure' }}
+    needs: [prep, w2, w3, w4, w5, w6, w7, w8]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w9, shards: "${{ needs.prep.outputs.w9 }}", reuse: true}
+    with: {wave: w9, shards: "${{ needs.prep.outputs.w9 }}", reuse: true, mathlib_batch: "${{ inputs.mathlib_batch }}"}
