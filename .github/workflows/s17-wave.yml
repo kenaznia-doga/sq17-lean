@@ -4,7 +4,7 @@ on:
     inputs:
       wave: {type: string, required: true}
       shards: {type: string, required: true}
-      base_run: {type: string, required: false, default: ''}
+      reuse: {type: boolean, required: false, default: false}
 permissions:
   contents: read
   actions: read
@@ -35,25 +35,25 @@ jobs:
           wc -l shard.txt
           python3 replay/s17b.py extract --modules shard.txt --delete-archives
       - uses: actions/download-artifact@v4
+        if: ${{ inputs.reuse }}
+        with: {name: reuse, path: reuse}
+      - uses: actions/download-artifact@v4
         with: {pattern: olean-*, merge-multiple: true, path: .lake/build/lib/lean}
       - uses: actions/download-artifact@v4
         with: {pattern: receipts-*, path: prev-receipts}
-      - name: Reused w0/w1 outputs of the base run (receipts bind them by sha256)
-        if: ${{ inputs.base_run != '' }}
+      - name: Reused shards of earlier runs (receipts bind them by sha256)
+        if: ${{ inputs.reuse }}
         run: |
           set -euo pipefail
-          mkdir -p .lake/build/lib/lean prev-receipts
-          for i in 1 2 3 4 5; do rm -rf base-dl; gh run download ${{ inputs.base_run }} --repo ${{ github.repository }} --pattern 'olean-w[01]-*' --pattern 'receipts-w[01]-*' -D base-dl && break; sleep 30; done
-          for d in base-dl/olean-*/; do cp -rn "$d". .lake/build/lib/lean/; done
-          for d in base-dl/receipts-*/; do test ! -e "prev-receipts/$(basename $d)"; mv "$d" prev-receipts/; done
-          rm -rf base-dl; ls prev-receipts | wc -l
+          python3 replay/reuse.py fetch --reuse reuse --lib .lake/build/lib/lean --receipts prev-receipts
+          ls prev-receipts | wc -l
       - name: Compile
         run: |
           mkdir -p out
           ( while true; do free -m | awk '/Mem/{print strftime("%H:%M:%S"), $3, $7}' >> out/mem.log; sleep 20; done ) &
           python3 replay/s17b.py build --modules shard.txt --jobs ${{ matrix.s.jobs }} --proof-jobs ${{ matrix.s.pjobs }} --expect prev-receipts --receipts out/receipts.jsonl --logs out/logs
       - name: leanchecker (per-module kernel replay)
-        run: python3 replay/s17b.py check --modules shard.txt $([ "$MATHLIB" = 1 ] && echo --mathlib) --batch 40 --receipts out/check.jsonl --logs out/checklogs
+        run: python3 replay/s17b.py check --modules shard.txt $([ "$MATHLIB" = 1 ] && echo --mathlib) --batch 8 --receipts out/check.jsonl --logs out/checklogs
       - name: Stage outputs
         if: always()
         run: |

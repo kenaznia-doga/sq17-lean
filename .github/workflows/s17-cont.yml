@@ -2,7 +2,7 @@ name: s17 B fresh replay continuation (w2..w9 from a base run's w0/w1)
 on:
   workflow_dispatch:
     inputs:
-      base_run: {type: string, required: true}
+      bases: {type: string, required: true, description: 'JSON [{"run":ID,"shards":[globs]}]: shards taken from earlier runs'}
       waves:
         type: string
         default: "w0:1-1:1 w1:2-2:16 w2:3-3:10 w3:4-4:12 w4:5-5:4 w5:6-15:3 w6:16-16:6 w7:17-23:2 w8:24-24:8 w9:25-30:1"
@@ -29,34 +29,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: {persist-credentials: false}
-      - name: Base run custody (artifact ids, digests, commit)
-        run: |
-          set -euo pipefail
-          mkdir -p plan reuse
-          gh api repos/${{ github.repository }}/actions/runs/${{ inputs.base_run }} > reuse/base-run.json
-          gh api --paginate repos/${{ github.repository }}/actions/runs/${{ inputs.base_run }}/artifacts -q '.artifacts[]' | python3 -c "
-          import json,sys,re
-          a=[json.loads(l) for l in sys.stdin if l.strip()]
-          keep=sorted(({k:x[k] for k in ('id','name','size_in_bytes','digest','created_at','expired')} for x in a if re.fullmatch(r'(olean|receipts)-w[01]-\d+|plan', x['name'])), key=lambda x:x['name'])
-          assert not any(x['expired'] for x in keep)
-          json.dump(keep,open('reuse/base-artifacts.json','w'),indent=1)
-          print(len(keep),'base artifacts reused')"
-          python3 -c "import json;r=json.load(open('reuse/base-run.json'));print(r['head_sha'],r['path'],r['conclusion'])"
-          gh run download ${{ inputs.base_run }} --repo ${{ github.repository }} -n plan -D base-plan
-      - name: Plan (w0/w1 must equal the base run's)
+      - name: Plan, reuse custody (reused shards must equal the base runs' plans)
         id: m
         run: |
           set -euo pipefail
+          mkdir -p plan reuse
           python3 replay/s17b.py plan --waves ${{ inputs.waves }} --complete --out plan/plan.json
-          python3 -c "
-          import json
-          a=json.load(open('plan/plan.json'));b=json.load(open('base-plan/plan.json'))
-          assert a['w0']==b['w0'] and a['w1']==b['w1'], 'w0/w1 differ from base'
-          FAST=['HalfPlaneFast','CaptureRunFast','CaptureTableFast','HalfPlaneCoverFast','CaptureSummaryFast']
-          open('reuse/base-modules.txt','w').write('\n'.join(sorted([m for w in ('w0','w1') for s in b[w] for m in s['modules']]+['Sq17Lean.'+f for f in FAST]))+'\n')
-          for w in a: print(w,[(s['shard'],len(s['modules'])) for s in a[w]])"
-          python3 replay/s17b.py matrix --plan plan/plan.json --waves w2 w3 w4 w5 w6 w7 w8 w9 --jobs ${{ inputs.jobs }} --pjobs ${{ inputs.pjobs }} >> "$GITHUB_OUTPUT"
-          echo "${{ inputs.base_run }}" > reuse/base-run-id.txt; sha256sum reuse/* plan/plan.json base-plan/plan.json
+          python3 replay/reuse.py prep --bases '${{ inputs.bases }}' --plan plan/plan.json --out reuse
+          python3 replay/s17b.py matrix --plan plan/plan.json --waves w2 w3 w4 w5 w6 w7 w8 w9 --jobs ${{ inputs.jobs }} --pjobs ${{ inputs.pjobs }} | python3 -c "
+          import sys,json
+          skip=set(open('reuse/skip.txt').read().split())
+          for l in sys.stdin:
+              k,v=l.rstrip('\n').split('=',1)
+              print(k+'='+json.dumps([x for x in json.loads(v) if x['shard'] not in skip],separators=(',',':')))" >> "$GITHUB_OUTPUT"
+          sha256sum reuse/*.* plan/plan.json
       - uses: actions/upload-artifact@v4
         with: {name: plan, path: plan/, retention-days: 30}
       - uses: actions/upload-artifact@v4
@@ -64,32 +50,39 @@ jobs:
   w2:
     needs: prep
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w2, shards: "${{ needs.prep.outputs.w2 }}", base_run: "${{ inputs.base_run }}"}
+    with: {wave: w2, shards: "${{ needs.prep.outputs.w2 }}", reuse: true}
   w3:
     needs: [prep, w2]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w2.result != 'failure' }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w3, shards: "${{ needs.prep.outputs.w3 }}", base_run: "${{ inputs.base_run }}"}
+    with: {wave: w3, shards: "${{ needs.prep.outputs.w3 }}", reuse: true}
   w4:
     needs: [prep, w3]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w3.result != 'failure' }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w4, shards: "${{ needs.prep.outputs.w4 }}", base_run: "${{ inputs.base_run }}"}
+    with: {wave: w4, shards: "${{ needs.prep.outputs.w4 }}", reuse: true}
   w5:
     needs: [prep, w4]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w4.result != 'failure' }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w5, shards: "${{ needs.prep.outputs.w5 }}", base_run: "${{ inputs.base_run }}"}
+    with: {wave: w5, shards: "${{ needs.prep.outputs.w5 }}", reuse: true}
   w6:
     needs: [prep, w5]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w5.result != 'failure' }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w6, shards: "${{ needs.prep.outputs.w6 }}", base_run: "${{ inputs.base_run }}"}
+    with: {wave: w6, shards: "${{ needs.prep.outputs.w6 }}", reuse: true}
   w7:
     needs: [prep, w6]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w6.result != 'failure' }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w7, shards: "${{ needs.prep.outputs.w7 }}", base_run: "${{ inputs.base_run }}"}
+    with: {wave: w7, shards: "${{ needs.prep.outputs.w7 }}", reuse: true}
   w8:
     needs: [prep, w7]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w7.result != 'failure' }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w8, shards: "${{ needs.prep.outputs.w8 }}", base_run: "${{ inputs.base_run }}"}
+    with: {wave: w8, shards: "${{ needs.prep.outputs.w8 }}", reuse: true}
   w9:
     needs: [prep, w8]
+    if: ${{ !cancelled() && needs.prep.result == 'success' && needs.w8.result != 'failure' }}
     uses: ./.github/workflows/s17-wave.yml
-    with: {wave: w9, shards: "${{ needs.prep.outputs.w9 }}", base_run: "${{ inputs.base_run }}"}
+    with: {wave: w9, shards: "${{ needs.prep.outputs.w9 }}", reuse: true}
