@@ -1,0 +1,56 @@
+name: s17 B pilot (fresh replay measurements)
+on:
+  workflow_dispatch:
+    inputs:
+      heavy: {type: string, default: "10"}
+      random: {type: string, default: "60"}
+permissions:
+  contents: read
+jobs:
+  pilot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MATHLIB: "1"
+      S17_SHARD: pilot
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Setup (elan, Lean 4.34.1, release archives, Mathlib cache)
+        run: bash replay/setup.sh
+      - name: Authenticate release and extract all sources
+        run: |
+          python3 replay/s17b.py extract --all --delete-archives
+          du -sh Sq17Lean; df -h /
+      - name: Pilot module lists
+        run: python3 replay/s17b.py pilot --heavy ${{ inputs.heavy }} --random ${{ inputs.random }}
+      - name: Native checker libraries
+        run: python3 replay/s17b.py fast --receipts out/receipts.jsonl --logs out/logs
+      - name: Statement closure (PackingStatement + EndpointGeometry)
+        run: python3 replay/s17b.py build --modules pilot1.txt --jobs 3 --proof-jobs 3 --keep-going --receipts out/receipts.jsonl --logs out/logs
+      - name: Statement audit
+        run: |
+          LEAN_PATH=$PWD/.lake/build/lib/lean:$(lake env printenv LEAN_PATH) lean replay/StatementAudit.lean > out/StatementAudit.log 2>&1; echo rc=$? >> out/StatementAudit.log
+          cat out/StatementAudit.log
+      - name: Heavy depth-2 sample
+        if: always()
+        run: |
+          ( while true; do free -m | awk '/Mem/{print strftime("%H:%M:%S"), $3, $7}' >> out/mem.log; sleep 15; done ) &
+          python3 replay/s17b.py build --modules pilot2.txt --jobs 4 --proof-jobs 1 --keep-going --receipts out/receipts.jsonl --logs out/logs
+      - name: leanchecker per-module replay of everything built
+        if: always()
+        run: |
+          python3 -c "import json;print('\n'.join(r['module'] for r in map(json.loads,open('out/receipts.jsonl')) if r.get('ok') or r['kind']=='fast'))" > built.txt
+          python3 replay/s17b.py check --modules built.txt --mathlib --batch 40 --receipts out/receipts.jsonl --logs out/logs
+      - name: Sizes
+        if: always()
+        run: |
+          du -sh .lake/build/lib/lean .lake/packages ~/.cache/mathlib || true; df -h /; free -m
+          tar -czf out/logs.tgz -C out logs && rm -rf out/logs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pilot-evidence
+          path: out/
+          retention-days: 30
