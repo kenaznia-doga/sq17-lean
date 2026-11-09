@@ -125,7 +125,7 @@ jobs:
           while read -r batch; do
             /usr/bin/time -f "%e %M" -o t.txt lake env leanchecker $batch >> out/mathlib-check.log 2>&1 || { echo "FAIL $batch" | tee -a out/mathlib-check.log; exit 1; }
             n=$((n+$(echo $batch | wc -w))); echo "OK $n $(cat t.txt) $batch" >> out/mathlib-progress.log
-          done < <(xargs -n 8 < mine.txt)
+          done < <(xargs -n 4 < mine.txt)
           echo "MATHLIB_LEANCHECKER_OK $n modules" | tee -a out/mathlib-check.log
       - uses: actions/upload-artifact@v4
         if: always()
