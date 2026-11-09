@@ -93,48 +93,8 @@ jobs:
     needs: [prep, w8]
     uses: ./.github/workflows/s17-wave.yml
     with: {wave: w9, shards: "${{ needs.prep.outputs.w9 }}"}
-  mathlib:
-    needs: prep
-    runs-on: ubuntu-24.04
-    timeout-minutes: 350
-    strategy:
-      fail-fast: false
-      matrix:
-        k: [0, 1, 2, 3, 4, 5, 6, 7]
-    env:
-      GH_TOKEN: ${{ github.token }}
-      MATHLIB: "1"
-      S17_SHARD: mathlib-${{ matrix.k }}
-    steps:
-      - uses: actions/checkout@v4
-        with: {persist-credentials: false}
-      - name: Setup
-        run: bash replay/setup.sh
-      - name: leanchecker over the external import closure (all non-Lean/Lake modules), shard ${{ matrix.k }} of 8
-        run: |
-          set -euo pipefail
-          mkdir -p out
-          python3 -c "import json;print('\n'.join(json.load(open('manifest.json'))['external_imports']))" > ext.txt
-          lake env lean --run replay/ExtClosure.lean ext.txt > closure.txt
-          wc -l closure.txt
-          grep -vE '^(Lean|Lake)(\.|$)' closure.txt | awk 'NR % 8 == ${{ matrix.k }}' > mine.txt
-          wc -l mine.txt
-          ( cd .lake/packages && find . -name '*.olean' -print0 | sort -z | xargs -0 sha256sum ) > out/package-oleans.sha256
-          sha256sum closure.txt mine.txt > out/lists.sha256; cp closure.txt mine.txt out/
-          n=0; : > out/mathlib-check.log
-          while read -r batch; do
-            /usr/bin/time -f "%e %M" -o t.txt lake env leanchecker $batch >> out/mathlib-check.log 2>&1 || { echo "FAIL $batch" | tee -a out/mathlib-check.log; exit 1; }
-            n=$((n+$(echo $batch | wc -w))); echo "OK $n $(cat t.txt) $batch" >> out/mathlib-progress.log
-          done < <(xargs -n 4 < mine.txt)
-          echo "MATHLIB_LEANCHECKER_OK $n modules" | tee -a out/mathlib-check.log
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: mathlib-check-${{ matrix.k }}
-          path: out/
-          retention-days: 30
   final:
-    needs: [w9, mathlib]
+    needs: w9
     runs-on: ubuntu-24.04
     timeout-minutes: 300
     env:

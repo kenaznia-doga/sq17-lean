@@ -3,6 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id: {type: string, required: true}
+      mathlib_run: {type: string, required: true}
 permissions:
   contents: read
   actions: read
@@ -25,7 +26,7 @@ jobs:
           for i in 1 2 3 4 5; do rm -rf olean-dl; gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --pattern 'olean-*' -D olean-dl && break; sleep 30; done
           mkdir -p .lake/build/lib/lean && for d in olean-dl/*/; do cp -rn "$d". .lake/build/lib/lean/; done; rm -rf olean-dl
           for i in 1 2 3 4 5; do rm -rf receipts; gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --pattern 'receipts-*' -D receipts && break; sleep 30; done
-          for i in 1 2 3 4 5; do rm -rf mathlib-check; gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --pattern 'mathlib-check-*' -D mathlib-check && break; sleep 30; done
+          for i in 1 2 3 4 5; do rm -rf mathlib-check; gh run download ${{ inputs.mathlib_run }} --repo ${{ github.repository }} --pattern 'mathlib-check-*' -D mathlib-check && break; sleep 30; done
       - name: Validate the fresh-build chain
         run: |
           mkdir -p final
