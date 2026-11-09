@@ -4,6 +4,7 @@ on:
     inputs:
       run_id: {type: string, required: true}
       mathlib_run: {type: string, required: true}
+      base_run: {type: string, required: false, default: '', description: 'for a continuation run (s17-cont.yml): the run whose w0/w1 it reused'}
 permissions:
   contents: read
   actions: read
@@ -26,11 +27,21 @@ jobs:
           for i in 1 2 3 4 5; do rm -rf olean-dl; gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --pattern 'olean-*' -D olean-dl && break; sleep 30; done
           mkdir -p .lake/build/lib/lean && for d in olean-dl/*/; do cp -rn "$d". .lake/build/lib/lean/; done; rm -rf olean-dl
           for i in 1 2 3 4 5; do rm -rf receipts; gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} --pattern 'receipts-*' -D receipts && break; sleep 30; done
+          if [ -n "${{ inputs.base_run }}" ]; then
+            gh run download ${{ inputs.run_id }} --repo ${{ github.repository }} -n reuse -D reuse
+            test "$(cat reuse/base-run-id.txt)" = "${{ inputs.base_run }}"
+            for i in 1 2 3 4 5; do rm -rf base-dl; gh run download ${{ inputs.base_run }} --repo ${{ github.repository }} --pattern 'olean-w[01]-*' --pattern 'receipts-w[01]-*' -D base-dl && break; sleep 30; done
+            for d in base-dl/olean-*/; do cp -rn "$d". .lake/build/lib/lean/; done
+            for d in base-dl/receipts-*/; do test ! -e "receipts/$(basename $d)"; mv "$d" receipts/; done
+            rm -rf base-dl
+          fi
           for i in 1 2 3 4 5; do rm -rf mathlib-check; gh run download ${{ inputs.mathlib_run }} --repo ${{ github.repository }} --pattern 'mathlib-check-*' -D mathlib-check && break; sleep 30; done
       - name: Validate the fresh-build chain
         run: |
           mkdir -p final
-          python3 replay/check17.py --manifest manifest.json --receipts receipts --run "${{ inputs.run_id }}" --lib .lake/build/lib/lean --out final/chain.json
+          python3 replay/check17.py --manifest manifest.json --receipts receipts --run "${{ inputs.run_id }}" --lib .lake/build/lib/lean --out final/chain.json \
+            $([ -n "${{ inputs.base_run }}" ] && echo --base-run ${{ inputs.base_run }} --base-modules reuse/base-modules.txt)
+          if [ -n "${{ inputs.base_run }}" ]; then cp reuse/base-artifacts.json reuse/base-run.json reuse/base-modules.txt final/; fi
       - name: Final statement and axiom audit (from this run's oleans)
         if: always()
         run: |

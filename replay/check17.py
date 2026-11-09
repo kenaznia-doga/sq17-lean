@@ -9,7 +9,12 @@ the same five native libraries and Lean 4.34.1, every module was replayed by
 leanchecker (exit 0) on the same olean bytes, and (optionally) the olean files on
 disk hash to the receipts. Usage:
   check17.py --manifest manifest.json --receipts DIR --run RUN_ID [--lib LIBDIR] --out result.json
+           [--base-run BASE_RUN --base-modules FILE]
 DIR is searched recursively for receipts.jsonl / check.jsonl files.
+Continuation: with --base-run, receipts of BASE_RUN are accepted exactly for the modules listed
+in FILE (the base run's completed waves, e.g. w0+w1, fast modules included), and RUN's receipts
+for all others; each module's build and leanchecker receipts must come from the run that owns it,
+each run has one commit, and every build receipt carries the identical driver/config hashes.
 """
 import argparse
 import hashlib
@@ -30,8 +35,12 @@ def sha(path):
     return h.hexdigest()
 
 
-def validate(manifest, receipt_dir, run, lib):
+def validate(manifest, receipt_dir, run, lib, base_run=None, base_mods=frozenset()):
     errors = []
+    runs = {str(run)} | ({str(base_run)} if base_run else set())
+
+    def owner(m):
+        return str(base_run) if base_run and m in base_mods else str(run)
 
     def err(code, detail):
         errors.append(dict(code=code, detail=detail))
@@ -51,7 +60,7 @@ def validate(manifest, receipt_dir, run, lib):
     files = sorted(Path(receipt_dir).rglob('receipts.jsonl')) + sorted(Path(receipt_dir).rglob('check.jsonl'))
     if not files:
         err('no_receipts', str(receipt_dir))
-    versions, natives, shas = set(), set(), set()
+    versions, natives, shas, configs = set(), set(), {}, set()
     for f in files:
         for i, line in enumerate(f.read_text().splitlines()):
             try:
@@ -60,12 +69,20 @@ def validate(manifest, receipt_dir, run, lib):
                 err('bad_json', f'{f}:{i + 1}')
                 continue
             ru = r.get('runner', {})
-            if str(ru.get('run')) != str(run) or ru.get('repo') != REPO:
+            if str(ru.get('run')) not in runs or ru.get('repo') != REPO:
                 err('foreign_receipt', f'{f}:{i + 1} run={ru.get("run")} repo={ru.get("repo")}')
                 continue
-            shas.add(ru.get('sha'))
-            versions.add(r.get('lean'))
             k = r.get('kind')
+            rmods = r['olean'].keys() if k == 'leanchecker' else [r.get('module')]
+            if any(owner(m) != str(ru.get('run')) for m in rmods):
+                if k == 'module' and not r.get('ok'):
+                    continue
+                err('wrong_run', f'{f}:{i + 1} run={ru.get("run")} modules={sorted(rmods)[:3]}')
+                continue
+            shas.setdefault(str(ru.get('run')), set()).add(ru.get('sha'))
+            versions.add(r.get('lean'))
+            if k in ('fast', 'module') and r.get('config') is not None:
+                configs.add(json.dumps(r['config'], sort_keys=True))
             if k == 'fast':
                 if r['module'] in fast_rec:
                     err('fast_twice', r['module'])
@@ -85,8 +102,10 @@ def validate(manifest, receipt_dir, run, lib):
                 err('unknown_kind', f'{f}:{i + 1}')
     if len(versions) != 1 or not next(iter(versions), '') or '4.34.1' not in next(iter(versions)):
         err('lean_version', sorted(map(str, versions)))
-    if len(shas) != 1:
-        err('commit', sorted(map(str, shas)))
+    if set(shas) != runs or any(len(v) != 1 for v in shas.values()):
+        err('commit', {k: sorted(map(str, v)) for k, v in shas.items()})
+    if len(configs) != 1:
+        err('config', f'{len(configs)} distinct driver/config hash sets')
     if set(fast_rec) != fast:
         err('fast_set', sorted(fast ^ set(fast_rec)))
     so = {('Sq17Lean_' + r['module'].split('.')[-1] + '.so'): r['so'] for r in fast_rec.values()}
@@ -130,7 +149,8 @@ def validate(manifest, receipt_dir, run, lib):
             err('disk_olean', dict(count=len(bad), first=bad[:20]))
     cpu = sum(r['user'] + r['sys'] for r in [*built.values(), *fast_rec.values()])
     return dict(status='FRESH_CHAIN_ACCEPTED' if not errors else 'REJECTED', run=str(run), repo=REPO,
-                commit=next(iter(shas), None), lean=sorted(map(str, versions)), modules_built=len(built) + len(fast_rec),
+                base_run=str(base_run) if base_run else None, base_modules=len(base_mods),
+                commit={k: sorted(map(str, v)) for k, v in shas.items()}, lean=sorted(map(str, versions)), modules_built=len(built) + len(fast_rec),
                 closure=len(clos), leanchecked=len(clos) - len(unchecked), native_libs=so, disk=disk,
                 cpu_hours=round(cpu / 3600, 2), final_olean=olean.get(FINAL), errors=errors[:200],
                 error_count=len(errors), receipt_files=len(files))
@@ -143,8 +163,13 @@ def main():
     p.add_argument('--run', required=True)
     p.add_argument('--lib')
     p.add_argument('--out', required=True)
+    p.add_argument('--base-run')
+    p.add_argument('--base-modules')
     a = p.parse_args()
-    res = validate(json.loads(Path(a.manifest).read_text()), a.receipts, a.run, a.lib)
+    if bool(a.base_run) != bool(a.base_modules):
+        p.error('--base-run and --base-modules go together')
+    base = frozenset(Path(a.base_modules).read_text().split()) if a.base_modules else frozenset()
+    res = validate(json.loads(Path(a.manifest).read_text()), a.receipts, a.run, a.lib, a.base_run, base)
     Path(a.out).write_text(json.dumps(res, indent=1, sort_keys=True) + '\n')
     print(res['status'], res['error_count'], 'errors;', res['modules_built'], 'built;', res['leanchecked'], 'leanchecked')
     sys.exit(0 if res['status'] == 'FRESH_CHAIN_ACCEPTED' else 1)
