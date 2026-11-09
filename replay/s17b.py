@@ -357,8 +357,18 @@ def cmd_check(a):
     env = dict(os.environ, LEAN_PATH=lean_path)
     out = Path(a.receipts).open('a')
     bad = []
-    for i in range(0, len(targets), a.batch):
-        batch = targets[i:i + a.batch]
+    m, mods = manifest()
+    deps, core, depth = graph(mods)
+    batches, cur = [], []
+    # Each target replays in its own task with its own imported environment: keep Mathlib-importing batches small.
+    for t in sorted(targets, key=lambda x: not core[x]):
+        cur.append(t)
+        if len(cur) >= (a.batch if core[t] else a.mathlib_batch):
+            batches.append(cur)
+            cur = []
+    if cur:
+        batches.append(cur)
+    for i, batch in enumerate(batches):
         log = Path(a.logs) / f'leanchecker-{i:05d}.log'
         before = {t: sha(olean(t)) for t in batch}
         rc, tm = timed([checker, *batch], log, env)
@@ -490,6 +500,7 @@ def main():
     c.add_argument('--modules', required=True)
     c.add_argument('--batch', type=int, default=40)
     c.add_argument('--mathlib', action='store_true')
+    c.add_argument('--mathlib-batch', type=int, default=6)
     for x in (f, b, c):
         x.add_argument('--receipts', required=True)
         x.add_argument('--logs', required=True)
